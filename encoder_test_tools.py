@@ -44,11 +44,11 @@ class utils:
         with open(path) as file:
             data=csv.DictReader(file)
             for line in data:
-                ssim.append(float(line["ssim"]))
-                ms_ssim.append(float(line["ms_ssim"]))
+                ssim.append(float(line["float_ssim"]))
+                #ms_ssim.append(float(line["ms_ssim"]))
                 vmaf.append(float(line["vmaf"]))
 
-        return mean(ssim),mean(ms_ssim),mean(vmaf)
+        return mean(ssim),'No Data',mean(vmaf) #mean(ssim),mean(ms_ssim),mean(vmaf)
 
     @staticmethod
     def cls():
@@ -56,20 +56,6 @@ class utils:
             os.system("cls")
         else:
             os.system("clear")
-
-    @staticmethod
-    def init_workspace(path,vpy,clean=False):
-        if isinstance(path,str):
-            path=pathlib(path)
-        if path.is_dir():
-            if clean:
-                shutil.rmtree(str(path))
-                os.mkdir(path)
-            shutil.copy(vpy,str(path))
-        else:
-            os.mkdir(path)
-            shutil.copy(vpy,str(path))
-        os.chdir(path)
 
 class process_log:
     def __init__(self,method=None):
@@ -137,6 +123,21 @@ class process_log:
 
         return fps,bitrate
 
+    @staticmethod
+    def ffmpeg(path:str):
+        with open(path,"r") as file:
+            log=[i for i in file if i.startswith("frame=")][-1]
+
+        match=re.search(r"fps= *([0-9.]+).+bitrate= *([0-9.]+)kbits/s",log)
+
+        fps=None
+        bitrate=None
+        if match:
+            fps=float(match.group(1))
+            bitrate=float(match.group(2))
+
+        return fps,bitrate
+    
 class encode:
     def __init__(self,cmd:str,i:str,o:str,suffix:str,i_charset:str):
         self.cmd=cmd
@@ -182,7 +183,7 @@ class encode:
         script=rex.sub("",script)
         script+=f'rip=core.lsmas.LWLibavSource(r"{self.output}_fin{self.suffix}")\n'
         script+=f'rip=core.resize.Spline36(rip,{clip}.width,{clip}.height,format={clip}.format)\n'
-        script+=f'last=core.vmaf.VMAF({clip},rip, model=0,log_path="{self.output}.csv", log_fmt=2, ssim=True, ms_ssim=True)\n'
+        script+=f'last=core.vmaf.VMAF({clip},rip, model=0,log_path="{self.output}.csv", log_format=2, feature=2)\n'
         script+=f'last.set_output()'
 
         with open("vmaf.vpy","w",encoding=self.charset) as file:
@@ -195,7 +196,7 @@ class encode:
         if os.path.exists(f"{self.output}_fin.csv"):
             return True
         
-        if not os.path.exists(f"{self.output}_fin{self.suffix}") or not os.path.exists(f"{self.output}.log"):
+        if not os.path.exists(f"{self.output}_fin{self.suffix}"):
             if os.path.exists(f"{self.output}{self.suffix}"):
                 os.remove(f"{self.output}{self.suffix}")
             enc=self.encoder()
@@ -314,7 +315,7 @@ class chart:
             
             self.chart.add_yaxis(i["name"], y_data, is_connect_nones=True,is_smooth=True,
                 label_opts=opts.LabelOpts(is_show=False),
-                linestyle_opts=opts.LineStyleOpts(width=3,curve=10),
+                linestyle_opts=opts.LineStyleOpts(width=1,curve=10),
                 symbol_size=10
             )
 
@@ -381,15 +382,15 @@ class tester:
         self.result=[]
         self.quality=quality
         if not workspace:
-            workspace=test_arg if test_arg else "workspace"
+            workspace=test_arg
         
         self.workspace=pathlib.Path(workspace)
-        self.testlist=value if not test_arg else [f"{test_arg}{link}{i}" for i in value]
+        self.testlist=["",test_arg] if self.argsbooltype else [f"{test_arg}{link}{i}" for i in value]
         self.encoder=encoder
         self.base_args=base_args
         self.suffix=suffix
         self.chart=chart(title=self.encoder,output="report.html")
-        self.cmd='vspipe --y4m "{i}" -|'+self.encoder+" "+self.base_args
+        self.cmd='vspipe -c y4m "{i}" -|'+self.encoder+" "+self.base_args
 
         if process_log_method is None:
             if encoder=="x264":
@@ -398,15 +399,28 @@ class tester:
                 self.process_log=process_log.x265
             elif encoder=="vpxenc":
                 self.process_log=process_log.vpx
-            else: 
+            elif encoder.lower()=="svtav1encapp" or encoder=="sav1":
                 self.process_log=process_log.svtav1
+            else:
+                self.process_log=process_log.ffmpeg
+
+    def init_workspace(self,clean=False):
+        if self.workspace.is_dir():
+            if clean:
+                shutil.rmtree(str(self.workspace))
+                os.mkdir(self.workspace)
+            shutil.copy(self.source,str(self.workspace))
+        else:
+            os.mkdir(self.workspace)
+            shutil.copy(self.source,str(self.workspace))
+        os.chdir(self.workspace)
 
     def run(self):
-        utils.init_workspace(self.workspace,self.source)
+        self.init_workspace()
         for test in self.testlist:
             utils.cls()
             cmd=self.cmd.format(test=test,q="{q}",i="{i}",o="{o}")
-            st=single_tester(i=self.source,name=test,suffix=self.suffix,q=self.quality,cmd=cmd,i_charset=self.charset,process_log_method=self.process_log)
+            st=single_tester(i=self.source,name=''.join(i if i not in r'\/:*?"<>|' else '_' for i in test),suffix=self.suffix,q=self.quality,cmd=cmd,i_charset=self.charset,process_log_method=self.process_log)
             run=st.run()
             if not run:
                 self.fail.append(test)
@@ -414,7 +428,7 @@ class tester:
             self.result.append({"test":test,"data":st.getdata()})
         utils.cls()
 
-    def report(self):
+    def report(self,):
         for r in self.result:
             self.chart.add(r["data"],r["test"])
         self.chart.render()
@@ -428,17 +442,17 @@ class tester:
                 extra=self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}"))
         report.save("report.html")
 
-"""
 if __name__ == "__main__":
-    src=r"test.vpy"
-    encoder=r"SvtAv1EncApp"
-    base_args=r'-i stdin --input-depth 10 --rc 0 --irefresh-type 2 --keyint 299 --lp 8  -q {q} --{test} -b "{o}"'
+    src=r"Untitled.vpy"
+    encoder=r"ffmpeg"
+    base_args=r'-i - -crf {q} -{test} "{o}"'
     test_arg="preset"
-    value=[8,6]
+    value=[5,6]
     
-    test=tester(src,encoder,base_args,test_arg,value,suffix=".ivf")
+    test=tester(src,encoder,base_args,test_arg,value,suffix=".mkv",quality=[14,18,22,26],workspace='',link=' ')
     test.run()
     test.report()
-"""
+    input('\npress enter to exit')
+
 
         
