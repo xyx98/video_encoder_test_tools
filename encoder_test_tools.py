@@ -139,15 +139,25 @@ class process_log:
         return fps,bitrate
     
 class encode:
-    def __init__(self,cmd:str,i:str,o:str,suffix:str,i_charset:str):
+    def __init__(self,cmd:str,i:str,o:str,suffix:str,i_charset:str,twopass):
         self.cmd=cmd
         self.input=i
         self.output=o
         self.suffix=suffix
         self.charset=i_charset
+        self.twopass=twopass
 
     def encoder(self):
-        cmd=self.cmd.format(i=self.input,o=self.output+self.suffix)
+        cmd=self.cmd.format(i=self.input,o=self.output+self.suffix,passopt="{passopt}")
+        if self.twopass:
+            cmd1=cmd.format(passopt=f'--pass 1 --stats "{self.output}_2pass.log"')
+            cmd=cmd.format(passopt=f'--pass 2 --stats "{self.output}_2pass.log"')
+            print(cmd1)
+            firstpass=subprocess.run(cmd1,shell=True)
+            if firstpass.returncode:
+                raise BrokenPipeError
+        else:
+            cmd=cmd.format(passopt='')
         print(cmd)
         sp=subprocess.Popen(cmd,shell=True,stderr=subprocess.PIPE,stdout=subprocess.PIPE)
         logtext=""
@@ -217,7 +227,7 @@ class encode:
         return True
 
 class single_tester:
-    def __init__(self,i:str,name:str,suffix:str,q:list,cmd:str,i_charset:str,process_log_method):
+    def __init__(self,i:str,name:str,suffix:str,q:list,cmd:str,i_charset:str,process_log_method,twopass):
         self.input=i
         self.qlist=q
         self.cmd=cmd
@@ -227,12 +237,13 @@ class single_tester:
         self.log=process_log_method
         self.data=[]
         self.fail_log=[]
+        self.twopass=twopass
 
     def run(self):
         mark=True
         for q in self.qlist:
             utils.cls()
-            enc=encode(cmd=self.cmd.format(q=q,i="{i}",o="{o}"),i=self.input,o=f"{self.name}.q{q}",suffix=self.suffix,i_charset=self.charset)
+            enc=encode(cmd=self.cmd.format(q=q,i="{i}",o="{o}",passopt="{passopt}"),i=self.input,o=f"{self.name}.q{q}",suffix=self.suffix,i_charset=self.charset,twopass=self.twopass)
             run=enc.run()
             mark=mark and run
             if run:
@@ -374,7 +385,7 @@ class htmlreport:
             file.write(self.soup.prettify())
 
 class tester:
-    def __init__(self,src:str,encoder:str,base_args:str,test_arg:str,value=None,quality=[24,27,30,33,36],link:str=" ",workspace:str="",suffix="",process_log_method=None,i_charset="utf-8"):
+    def __init__(self,src:str,encoder:str,base_args:str,test_arg:str,value=None,quality=[24,27,30,33,36],link:str=" ",workspace:str="",suffix="",process_log_method=None,i_charset="utf-8",twopass=False):
         self.source=src
         self.charset=i_charset
         self.argsbooltype=not isinstance(value,list)
@@ -391,6 +402,7 @@ class tester:
         self.suffix=suffix
         self.chart=chart(title=self.encoder,output="report.html")
         self.cmd='vspipe -c y4m "{i}" -|'+self.encoder+" "+self.base_args
+        self.twopass=twopass
 
         if process_log_method is None:
             if encoder=="x264":
@@ -419,8 +431,8 @@ class tester:
         self.init_workspace()
         for test in self.testlist:
             utils.cls()
-            cmd=self.cmd.format(test=test,q="{q}",i="{i}",o="{o}")
-            st=single_tester(i=self.source,name=''.join(i if i not in r'\/:*?"<>|' else '_' for i in test),suffix=self.suffix,q=self.quality,cmd=cmd,i_charset=self.charset,process_log_method=self.process_log)
+            cmd=self.cmd.format(test=test,q="{q}",i="{i}",o="{o}",passopt="{passopt}")
+            st=single_tester(i=self.source,name=''.join(i if i not in r'\/:*?"<>|' else '_' for i in test),suffix=self.suffix,q=self.quality,cmd=cmd,i_charset=self.charset,process_log_method=self.process_log,twopass=self.twopass)
             run=st.run()
             if not run:
                 self.fail.append(test)
@@ -439,17 +451,17 @@ class tester:
         for r in self.result:
             report.addtable(r["test"],r["data"],["q","bitrate","ssim","ms_ssim","vmaf","speed"],
                 process=lambda x,y: str(x[y])+"&ensp;fps" if y=="speed" else str(x[y])+"&ensp;kbps" if y=="bitrate" else str(x[y]),
-                extra=self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}"))
+                extra=self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}",passopt="<2-PASS_OPTS>" if self.twopass else ''))
         report.save("report.html")
 
 if __name__ == "__main__":
     src=r"Untitled.vpy"
-    encoder=r"ffmpeg"
-    base_args=r'-i - -crf {q} -{test} "{o}"'
+    encoder=r"x264"
+    base_args=r'--demuxer y4m --bitrate {q} --{test} {passopt} -o "{o}" -'
     test_arg="preset"
-    value=[5,6]
+    value=[1,2]
     
-    test=tester(src,encoder,base_args,test_arg,value,suffix=".mkv",quality=[14,18,22,26],workspace='',link=' ')
+    test=tester(src,encoder,base_args,test_arg,value,suffix=".h264",quality=[2000,3000,5000],workspace='',link=' ',twopass=True)
     test.run()
     test.report()
     input('\npress enter to exit')
