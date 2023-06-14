@@ -440,7 +440,7 @@ class tester:
             self.result.append({"test":test,"data":st.getdata()})
         utils.cls()
 
-    def report(self,):
+    def report(self):
         for r in self.result:
             self.chart.add(r["data"],r["test"])
         self.chart.render()
@@ -449,7 +449,7 @@ class tester:
         
         report=htmlreport(html)
         for r in self.result:
-            report.addtable(r["test"],r["data"],["q","bitrate","ssim","ms_ssim","vmaf","speed"],
+            report.addtable(r["test"],r["data"],["q","bitrate","ssim","vmaf","speed"],
                 process=lambda x,y: str(x[y])+"&ensp;fps" if y=="speed" else str(x[y])+"&ensp;kbps" if y=="bitrate" else str(x[y]),
                 extra=self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}",passopt="<2-PASS_OPTS>" if self.twopass else ''))
         report.save("report.html")
@@ -465,6 +465,3 @@ if __name__ == "__main__":
     test.run()
     test.report()
     input('\npress enter to exit')
-
-
-        
