@@ -44,11 +44,12 @@ class utils:
         with open(path) as file:
             data=csv.DictReader(file)
             for line in data:
-                ssim.append(float(line["ssim"]))
-                ms_ssim.append(float(line["ms_ssim"]))
-                vmaf.append(float(line["vmaf"]))
+                ssim.append(float(line["float_ssim"]))
+                #ms_ssim.append(float(line["ms_ssim"]))
+                vmaf_val=line.get('vmaf') or line.get('vmaf_neg') or line.get('vmaf_b_bagging') or line.get('vmaf_4k')
+                vmaf.append(float(vmaf_val))
 
-        return mean(ssim),mean(ms_ssim),mean(vmaf)
+        return mean(ssim),'No Data',mean(vmaf) #mean(ssim),mean(ms_ssim),mean(vmaf)
 
     @staticmethod
     def cls():
@@ -56,20 +57,6 @@ class utils:
             os.system("cls")
         else:
             os.system("clear")
-
-    @staticmethod
-    def init_workspace(path,vpy,clean=False):
-        if isinstance(path,str):
-            path=pathlib(path)
-        if path.is_dir():
-            if clean:
-                shutil.rmtree(str(path))
-                os.mkdir(path)
-            shutil.copy(vpy,str(path))
-        else:
-            os.mkdir(path)
-            shutil.copy(vpy,str(path))
-        os.chdir(path)
 
 class process_log:
     def __init__(self,method=None):
@@ -137,16 +124,42 @@ class process_log:
 
         return fps,bitrate
 
+    @staticmethod
+    def ffmpeg(path:str):
+        with open(path,"r") as file:
+            log=[i for i in file if i.startswith("frame=")][-1]
+
+        match=re.search(r"fps= *([0-9.]+).+bitrate= *([0-9.]+)kbits/s",log)
+
+        fps=None
+        bitrate=None
+        if match:
+            fps=float(match.group(1))
+            bitrate=float(match.group(2))
+
+        return fps,bitrate
+    
 class encode:
-    def __init__(self,cmd:str,i:str,o:str,suffix:str,i_charset:str):
+    def __init__(self,cmd:str,i:str,o:str,suffix:str,i_charset:str,twopass,vmaf_model):
         self.cmd=cmd
         self.input=i
         self.output=o
         self.suffix=suffix
         self.charset=i_charset
+        self.twopass=twopass
+        self.vmaf_model=vmaf_model
 
     def encoder(self):
-        cmd=self.cmd.format(i=self.input,o=self.output+self.suffix)
+        cmd=self.cmd.format(i=self.input,o=self.output+self.suffix,passopt="{passopt}")
+        if self.twopass:
+            cmd1=cmd.format(passopt=f'--pass 1 --stats "{self.output}_2pass.log"')
+            cmd=cmd.format(passopt=f'--pass 2 --stats "{self.output}_2pass.log"')
+            print(cmd1)
+            firstpass=subprocess.run(cmd1,shell=True)
+            if firstpass.returncode:
+                raise BrokenPipeError
+        else:
+            cmd=cmd.format(passopt='')
         print(cmd)
         sp=subprocess.Popen(cmd,shell=True,stderr=subprocess.PIPE,stdout=subprocess.PIPE)
         logtext=""
@@ -182,7 +195,7 @@ class encode:
         script=rex.sub("",script)
         script+=f'rip=core.lsmas.LWLibavSource(r"{self.output}_fin{self.suffix}")\n'
         script+=f'rip=core.resize.Spline36(rip,{clip}.width,{clip}.height,format={clip}.format)\n'
-        script+=f'last=core.vmaf.VMAF({clip},rip, model=0,log_path="{self.output}.csv", log_fmt=2, ssim=True, ms_ssim=True)\n'
+        script+=f'last=core.vmaf.VMAF({clip},rip, model={self.vmaf_model},log_path="{self.output}.csv", log_format=2, feature=2)\n'
         script+=f'last.set_output()'
 
         with open("vmaf.vpy","w",encoding=self.charset) as file:
@@ -195,7 +208,7 @@ class encode:
         if os.path.exists(f"{self.output}_fin.csv"):
             return True
         
-        if not os.path.exists(f"{self.output}_fin{self.suffix}") or not os.path.exists(f"{self.output}.log"):
+        if not os.path.exists(f"{self.output}_fin{self.suffix}"):
             if os.path.exists(f"{self.output}{self.suffix}"):
                 os.remove(f"{self.output}{self.suffix}")
             enc=self.encoder()
@@ -216,7 +229,7 @@ class encode:
         return True
 
 class single_tester:
-    def __init__(self,i:str,name:str,suffix:str,q:list,cmd:str,i_charset:str,process_log_method):
+    def __init__(self,i:str,name:str,suffix:str,q:list,cmd:str,i_charset:str,process_log_method,twopass,vmaf_model):
         self.input=i
         self.qlist=q
         self.cmd=cmd
@@ -226,12 +239,14 @@ class single_tester:
         self.log=process_log_method
         self.data=[]
         self.fail_log=[]
+        self.twopass=twopass
+        self.vmaf_model=vmaf_model
 
     def run(self):
         mark=True
         for q in self.qlist:
             utils.cls()
-            enc=encode(cmd=self.cmd.format(q=q,i="{i}",o="{o}"),i=self.input,o=f"{self.name}.q{q}",suffix=self.suffix,i_charset=self.charset)
+            enc=encode(cmd=self.cmd.format(q=q,i="{i}",o="{o}",passopt="{passopt}"),i=self.input,o=f"{self.name}.q{q}",suffix=self.suffix,i_charset=self.charset,twopass=self.twopass,vmaf_model=self.vmaf_model)
             run=enc.run()
             mark=mark and run
             if run:
@@ -242,7 +257,8 @@ class single_tester:
                     mark=False
                 template["bitrate"]=bitrate
                 template["speed"]=fps
-                template["ssim"],template["ms_ssim"],template["vmaf"]=utils.calc_score(f"{self.name}.q{q}_fin.csv")
+                vmaf_tab=['vmaf','vmaf_neg','vmaf_b_bagging','vmaf_4k'][self.vmaf_model]
+                template["ssim"],template["ms_ssim"],template[vmaf_tab]=utils.calc_score(f"{self.name}.q{q}_fin.csv")
                 self.data.append(template)
         return mark
 
@@ -259,9 +275,10 @@ class single_tester:
                 file.write(f'\n{line["q"]}\t{line["speed"]}\t{line["ssim"]}\t{line["ms_ssim"]}\t{line["vmaf"]}')
 
 class chart:
-    def __init__(self,title:str,output:str):
+    def __init__(self,title:str,output:str,vmaf_model):
         self.title=title
         self.output=output
+        self.vmaf_model=vmaf_model
         self.datas=[]
         self.chart=(
             Line(init_opts=opts.InitOpts(
@@ -314,14 +331,15 @@ class chart:
             
             self.chart.add_yaxis(i["name"], y_data, is_connect_nones=True,is_smooth=True,
                 label_opts=opts.LabelOpts(is_show=False),
-                linestyle_opts=opts.LineStyleOpts(width=3,curve=10),
+                linestyle_opts=opts.LineStyleOpts(width=1,curve=10),
                 symbol_size=10
             )
 
         self.chart.render(self.output)
 
     def add(self,data:list,name:str):
-        self.datas.append({"name":name,"data":[(i["bitrate"],i["vmaf"]) for i in data]})
+        vmaf_tab=['vmaf','vmaf_neg','vmaf_b_bagging','vmaf_4k'][self.vmaf_model]
+        self.datas.append({"name":name,"data":[(i["bitrate"],i[vmaf_tab]) for i in data]})
 
     def addfromfile(self,path,name):
         with open(path,"r") as file:
@@ -373,7 +391,7 @@ class htmlreport:
             file.write(self.soup.prettify())
 
 class tester:
-    def __init__(self,src:str,encoder:str,base_args:str,test_arg:str,value=None,quality=[24,27,30,33,36],link:str=" ",workspace:str="",suffix="",process_log_method=None,i_charset="utf-8"):
+    def __init__(self,src:str,encoder:str,base_args:str,test_arg:str,value=None,quality=[24,27,30,33,36],link:str=" ",workspace:str="",suffix="",process_log_method=None,i_charset="utf-8",twopass=False,vmaf_model=0):
         self.source=src
         self.charset=i_charset
         self.argsbooltype=not isinstance(value,list)
@@ -381,15 +399,17 @@ class tester:
         self.result=[]
         self.quality=quality
         if not workspace:
-            workspace=test_arg if test_arg else "workspace"
+            workspace=test_arg
         
         self.workspace=pathlib.Path(workspace)
-        self.testlist=value if not test_arg else [f"{test_arg}{link}{i}" for i in value]
+        self.testlist=["",test_arg] if self.argsbooltype else [f"{test_arg}{link}{i}" for i in value]
         self.encoder=encoder
         self.base_args=base_args
         self.suffix=suffix
-        self.chart=chart(title=self.encoder,output="report.html")
-        self.cmd='vspipe --y4m "{i}" -|'+self.encoder+" "+self.base_args
+        self.chart=chart(title=self.encoder,output="report.html",vmaf_model=vmaf_model)
+        self.cmd='vspipe -c y4m "{i}" -|'+self.encoder+" "+self.base_args
+        self.twopass=twopass
+        self.vmaf_model=vmaf_model
 
         if process_log_method is None:
             if encoder=="x264":
@@ -398,15 +418,28 @@ class tester:
                 self.process_log=process_log.x265
             elif encoder=="vpxenc":
                 self.process_log=process_log.vpx
-            else: 
+            elif encoder.lower()=="svtav1encapp" or encoder=="sav1":
                 self.process_log=process_log.svtav1
+            else:
+                self.process_log=process_log.ffmpeg
+
+    def init_workspace(self,clean=False):
+        if self.workspace.is_dir():
+            if clean:
+                shutil.rmtree(str(self.workspace))
+                os.mkdir(self.workspace)
+            shutil.copy(self.source,str(self.workspace))
+        else:
+            os.mkdir(self.workspace)
+            shutil.copy(self.source,str(self.workspace))
+        os.chdir(self.workspace)
 
     def run(self):
-        utils.init_workspace(self.workspace,self.source)
+        self.init_workspace()
         for test in self.testlist:
             utils.cls()
-            cmd=self.cmd.format(test=test,q="{q}",i="{i}",o="{o}")
-            st=single_tester(i=self.source,name=test,suffix=self.suffix,q=self.quality,cmd=cmd,i_charset=self.charset,process_log_method=self.process_log)
+            cmd=self.cmd.format(test=test,q="{q}",i="{i}",o="{o}",passopt="{passopt}")
+            st=single_tester(i=self.source,name=''.join(i if i not in r'\/:*?"<>|' else '_' for i in test),suffix=self.suffix,q=self.quality,cmd=cmd,i_charset=self.charset,process_log_method=self.process_log,twopass=self.twopass,vmaf_model=self.vmaf_model)
             run=st.run()
             if not run:
                 self.fail.append(test)
@@ -423,22 +456,20 @@ class tester:
         
         report=htmlreport(html)
         for r in self.result:
-            report.addtable(r["test"],r["data"],["q","bitrate","ssim","ms_ssim","vmaf","speed"],
+            vmaf_tab=['vmaf','vmaf_neg','vmaf_b_bagging','vmaf_4k'][self.vmaf_model]
+            report.addtable(r["test"],r["data"],["q","bitrate","ssim",vmaf_tab,"speed"],
                 process=lambda x,y: str(x[y])+"&ensp;fps" if y=="speed" else str(x[y])+"&ensp;kbps" if y=="bitrate" else str(x[y]),
-                extra=self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}"))
+                extra=self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}",passopt="<2-PASS_OPTS>" if self.twopass else ''))
         report.save("report.html")
 
-"""
 if __name__ == "__main__":
-    src=r"test.vpy"
-    encoder=r"SvtAv1EncApp"
-    base_args=r'-i stdin --input-depth 10 --rc 0 --irefresh-type 2 --keyint 299 --lp 8  -q {q} --{test} -b "{o}"'
+    src=r"Untitled.vpy"
+    encoder=r"x264"
+    base_args=r'--demuxer y4m --bitrate {q} --{test} {passopt} -o "{o}" -'
     test_arg="preset"
-    value=[8,6]
+    value=[1,2]
     
-    test=tester(src,encoder,base_args,test_arg,value,suffix=".ivf")
+    test=tester(src,encoder,base_args,test_arg,value,suffix=".h264",quality=[2000,3000,5000],workspace='',link=' ',twopass=True,vmaf_model=0)
     test.run()
     test.report()
-"""
-
-        
+    input('\npress enter to exit')
