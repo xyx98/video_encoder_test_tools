@@ -14,6 +14,8 @@ from pyecharts.globals import ThemeType
 from pyecharts.commons import utils as pyecharts_utils
 
 from bs4 import BeautifulSoup
+import bjontegaard as bd
+import numpy as np
 
 class utils:
     @staticmethod
@@ -364,26 +366,48 @@ class htmlreport:
                     padding-right: 2em;
                 }
                 .extra{
-                    width: 30%;
+                    width: 8%;
+                }
+                .extra2{
+                    width: 22%;
                 }
                 </style>"""
         self.soup.head.append(BeautifulSoup(css,"html.parser"))
 
-    def addtable(self,title:str,data:list,head:list = None,extra:str = None,process=None):
+    def addtable(self,title:str,data:list,head:list = None,extra:str|list[str] = None,extratitle:str|list[str]=None,exclass:str|list[str]="extra",process=None):
         if process is None:
             process=lambda x,y: str(x[y])
         if head is None:
             head=list(data[0].keys())
         self.soup.body.append(BeautifulSoup(f"</br><h3>{title}</h3>","html.parser"))
-        table="<table><tbody><tr><th>"+"</th><th>".join(head)+"</th>{extra}</tr>"+"{lines}</tbody></table>"
+        etlist=[] if extratitle is None else [extratitle] if isinstance(extratitle,str) else extratitle
+        tri=extratitle is not None
+        if isinstance(exclass,str):
+            exclass=[exclass]
+        if isinstance(extra,list) and len(extra)>len(exclass):
+            exclass+=exclass+[exclass[-1]]*(len(extra)-len(exclass))
+
+        table="<table><tbody><tr><th>"+"</th><th>".join(head+etlist)+("</th>{extra}</tr>" if not tri else "")+"{lines}</tbody></table>"
         lines=""
         for i in data:
-            lines+=("<tr><td>"+"</td><td>".join([process(i,t) for t in head])+"</td><td>")
+            lines+=("<tr><td>"+"</td><td>".join([process(i,t) for t in head])+"</td>")
+            if tri:
+                lines+="{extra}</tr>"
+                tri=False
+            else:
+                lines+="</tr>"
         if extra is None:
             extra=""
+        elif isinstance(extra,str):
+            extra=f'<td rowspan={(len(data)+1) if extratitle is None else len(data)} class="{exclass[0]}">{extra}</td>'
         else:
-            extra=f'<td rowspan={len(data)+1} class="extra">{extra}</td>'
-        table=table.format(extra=extra,lines=lines)
+            elist=extra
+            extra=""
+            for i in range(len(elist)):
+                e=elist[i]
+                extra+=f'<td rowspan={(len(data)+1) if extratitle is None else len(data)} class="{exclass[i]}">{e}</td>'
+            
+        table=table.format(extra=extra,lines=lines) if extratitle is None else table.format(lines=lines).format(extra=extra)
         self.soup.body.append(BeautifulSoup(table,"html.parser"))
 
     def save(self,path:str):
@@ -391,7 +415,7 @@ class htmlreport:
             file.write(self.soup.prettify())
 
 class tester:
-    def __init__(self,src:str,encoder:str,base_args:str,test_arg:str,value=None,quality=[24,27,30,33,36],link:str=" ",workspace:str="",suffix="",process_log_method=None,i_charset="utf-8",twopass=False,vmaf_model=0):
+    def __init__(self,src:str,encoder:str,base_args:str,test_arg:str,value=None,quality=[24,27,30,33,36],link:str=" ",workspace:str="",suffix="",process_log_method=None,i_charset="utf-8",twopass=False,vmaf_model=0,ref=0):
         self.source=src
         self.charset=i_charset
         self.argsbooltype=not isinstance(value,list)
@@ -407,9 +431,11 @@ class tester:
         self.base_args=base_args
         self.suffix=suffix
         self.chart=chart(title=self.encoder,output="report.html",vmaf_model=vmaf_model)
-        self.cmd='vspipe -c y4m "{i}" -|'+self.encoder+" "+self.base_args
+        self.cmd='vspipe  -c y4m "{i}" -|'+self.encoder+" "+self.base_args
         self.twopass=twopass
         self.vmaf_model=vmaf_model
+        self.ref=self.testlist[ref]
+        self.skipbdrate=False
 
         if process_log_method is None:
             if encoder=="x264":
@@ -443,9 +469,20 @@ class tester:
             run=st.run()
             if not run:
                 self.fail.append(test)
+                self.skipbdrate=True
                 continue
             self.result.append({"test":test,"data":st.getdata()})
+            if self.ref==test:
+                self.refdata={"rate":[i['bitrate'] for i in st.getdata()],"score":[i['vmaf'] for i in st.getdata()]}
         utils.cls()
+        if not self.skipbdrate:
+            self.bdrate()
+
+    def bdrate(self):
+        ref_rate,ref_score=self.refdata["rate"],self.refdata["score"]
+        for r in self.result:
+            test_rate,test_score=[i['bitrate'] for i in r["data"]],[i['vmaf'] for i in r["data"]]
+            r["bdrate"]=bd.bd_rate(ref_rate, ref_score, test_rate, test_score, method='akima')
 
     def report(self):
         for r in self.result:
@@ -459,17 +496,20 @@ class tester:
             vmaf_tab=['vmaf','vmaf_neg','vmaf_b_bagging','vmaf_4k'][self.vmaf_model]
             report.addtable(r["test"],r["data"],["q","bitrate","ssim",vmaf_tab,"speed"],
                 process=lambda x,y: str(x[y])+"&ensp;fps" if y=="speed" else str(x[y])+"&ensp;kbps" if y=="bitrate" else str(x[y]),
-                extra=self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}",passopt="<2-PASS_OPTS>" if self.twopass else ''))
+                extra=[f'{r["bdrate"]:.02f}%',self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}",passopt="<2-PASS_OPTS>" if self.twopass else '')],
+                extratitle=["args"] if self.skipbdrate else ["bd-rate","args"],exclass=["extra2"] if self.skipbdrate else ["extra","extra2"])
+        
         report.save("report.html")
 
+
 if __name__ == "__main__":
-    src=r"Untitled.vpy"
+    src=r"test.vpy"
     encoder=r"x264"
-    base_args=r'--demuxer y4m --bitrate {q} --{test} {passopt} -o "{o}" -'
+    base_args=r'--demuxer y4m --crf {q} --{test} {passopt} -o "{o}" -'
     test_arg="preset"
-    value=[1,2]
+    value=[1,2,3]
     
-    test=tester(src,encoder,base_args,test_arg,value,suffix=".h264",quality=[2000,3000,5000],workspace='',link=' ',twopass=True,vmaf_model=0)
+    test=tester(src,encoder,base_args,test_arg,value,suffix=".h264",quality=[17,19,21,23,25],workspace='',link=' ',twopass=False,vmaf_model=0)
     test.run()
     test.report()
     input('\npress enter to exit')
