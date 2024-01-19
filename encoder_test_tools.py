@@ -2,7 +2,6 @@
 import os,sys
 import subprocess
 import re
-import textwrap
 import pathlib
 import shutil
 import csv
@@ -15,7 +14,6 @@ from pyecharts.commons import utils as pyecharts_utils
 
 from bs4 import BeautifulSoup
 import bjontegaard as bd
-import numpy as np
 
 class utils:
     @staticmethod
