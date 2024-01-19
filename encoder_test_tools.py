@@ -60,6 +60,8 @@ class utils:
         else:
             os.system("clear")
 
+    vmaf_model_list=['vmaf','vmaf_neg','vmaf_b_bagging','vmaf_4k']
+
 class process_log:
     def __init__(self,method=None):
         if method is None:
@@ -259,7 +261,7 @@ class single_tester:
                     mark=False
                 template["bitrate"]=bitrate
                 template["speed"]=fps
-                vmaf_tab=['vmaf','vmaf_neg','vmaf_b_bagging','vmaf_4k'][self.vmaf_model]
+                vmaf_tab=utils.vmaf_model_list[self.vmaf_model]
                 template["ssim"],template["ms_ssim"],template[vmaf_tab]=utils.calc_score(f"{self.name}.q{q}_fin.csv")
                 self.data.append(template)
         return mark
@@ -340,7 +342,7 @@ class chart:
         self.chart.render(self.output)
 
     def add(self,data:list,name:str):
-        vmaf_tab=['vmaf','vmaf_neg','vmaf_b_bagging','vmaf_4k'][self.vmaf_model]
+        vmaf_tab=utils.vmaf_model_list[self.vmaf_model]
         self.datas.append({"name":name,"data":[(i["bitrate"],i[vmaf_tab]) for i in data]})
 
     def addfromfile(self,path,name):
@@ -473,15 +475,16 @@ class tester:
                 continue
             self.result.append({"test":test,"data":st.getdata()})
             if self.ref==test:
-                self.refdata={"rate":[i['bitrate'] for i in st.getdata()],"score":[i['vmaf'] for i in st.getdata()]}
+                self.refdata={"rate":[i['bitrate'] for i in st.getdata()],"score":[i[utils.vmaf_model_list[self.vmaf_model]] for i in st.getdata()]}
         utils.cls()
         if not self.skipbdrate:
             self.bdrate()
 
     def bdrate(self):
         ref_rate,ref_score=self.refdata["rate"],self.refdata["score"]
+        vmaf_tab=utils.vmaf_model_list[self.vmaf_model]
         for r in self.result:
-            test_rate,test_score=[i['bitrate'] for i in r["data"]],[i['vmaf'] for i in r["data"]]
+            test_rate,test_score=[i['bitrate'] for i in r["data"]],[i[vmaf_tab] for i in r["data"]]
             r["bdrate"]=bd.bd_rate(ref_rate, ref_score, test_rate, test_score, method='akima')
 
     def report(self):
@@ -493,7 +496,7 @@ class tester:
         
         report=htmlreport(html)
         for r in self.result:
-            vmaf_tab=['vmaf','vmaf_neg','vmaf_b_bagging','vmaf_4k'][self.vmaf_model]
+            vmaf_tab=utils.vmaf_model_list[self.vmaf_model]
             report.addtable(r["test"],r["data"],["q","bitrate","ssim",vmaf_tab,"speed"],
                 process=lambda x,y: str(x[y])+"&ensp;fps" if y=="speed" else str(x[y])+"&ensp;kbps" if y=="bitrate" else str(x[y]),
                 extra=[f'{r["bdrate"]:.02f}%',self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}",passopt="<2-PASS_OPTS>" if self.twopass else '')],
