@@ -15,10 +15,12 @@ Use absolute path in source filter, or path relative to working folder, which no
 
 ### requirements:
 
-python3.8+
+python3.10+
 
 vapoursynth and plugins
 
 pyecharts
 
 BeautifulSoup4
+
+bjontegaard
