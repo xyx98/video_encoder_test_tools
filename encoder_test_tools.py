@@ -40,16 +40,26 @@ class utils:
         else:
             mean=lambda i: (sum(map(lambda x: x**2),i)/len(i))**0.5
         
-        ssim,ms_ssim,vmaf=[],[],[]
+        scores={"psnr-y":[],"psnr-hvs":[],"ssim":[],"vmaf":[]}
+        score_names_dict={"psnr_y":"psnr-y","psnr_hvs":"psnr-hvs","float_ssim":"ssim"}
         with open(path) as file:
-            data=csv.DictReader(file)
+            data=[i for i in csv.DictReader(file)]
+            found_metrics=[]
+            for i in ("psnr_y","psnr_hvs","float_ssim"):
+                if i in data[0]:
+                    found_metrics.append(i)
             for line in data:
-                ssim.append(float(line["float_ssim"]))
-                #ms_ssim.append(float(line["ms_ssim"]))
+                for i in found_metrics:
+                    name=score_names_dict[i]
+                    scores[name].append(float(line[i]))
                 vmaf_val=line.get('vmaf') or line.get('vmaf_neg') or line.get('vmaf_b_bagging') or line.get('vmaf_4k')
-                vmaf.append(float(vmaf_val))
+                scores["vmaf"].append(float(vmaf_val))
 
-        return mean(ssim),'No Data',mean(vmaf) #mean(ssim),mean(ms_ssim),mean(vmaf)
+        scores_mean={}
+        for i,j in scores.items():
+            if j:
+                scores_mean[i]=mean(j)
+        return scores_mean
 
     @staticmethod
     def cls():
@@ -59,6 +69,7 @@ class utils:
             os.system("clear")
 
     vmaf_model_list=['vmaf','vmaf_neg','vmaf_b_bagging','vmaf_4k']
+    feature_id={"psnr-y":0,"psnr-hvs":1,"ssim":2}
 
 class process_log:
     def __init__(self,method=None):
@@ -142,7 +153,7 @@ class process_log:
         return fps,bitrate
     
 class encode:
-    def __init__(self,cmd:str,i:str,o:str,suffix:str,i_charset:str,twopass,vmaf_model):
+    def __init__(self,cmd:str,i:str,o:str,suffix:str,i_charset:str,twopass,vmaf_model,extra_metrics):
         self.cmd=cmd
         self.input=i
         self.output=o
@@ -150,6 +161,7 @@ class encode:
         self.charset=i_charset
         self.twopass=twopass
         self.vmaf_model=vmaf_model
+        self.feature=[utils.feature_id[i] for i in extra_metrics]
 
     def encoder(self):
         cmd=self.cmd.format(i=self.input,o=self.output+self.suffix,passopt="{passopt}")
@@ -197,7 +209,7 @@ class encode:
         script=rex.sub("",script)
         script+=f'rip=core.lsmas.LWLibavSource(r"{self.output}_fin{self.suffix}")\n'
         script+=f'rip=core.resize.Spline36(rip,{clip}.width,{clip}.height,format={clip}.format)\n'
-        script+=f'last=core.vmaf.VMAF({clip},rip, model={self.vmaf_model},log_path="{self.output}.csv", log_format=2, feature=2)\n'
+        script+=f'last=core.vmaf.VMAF({clip},rip, model={self.vmaf_model},log_path="{self.output}.csv", log_format=2, feature={self.feature})\n'
         script+=f'last.set_output()'
 
         with open("vmaf.vpy","w",encoding=self.charset) as file:
@@ -231,7 +243,7 @@ class encode:
         return True
 
 class single_tester:
-    def __init__(self,i:str,name:str,suffix:str,q:list,cmd:str,i_charset:str,process_log_method,twopass,vmaf_model):
+    def __init__(self,i:str,name:str,suffix:str,q:list,cmd:str,i_charset:str,process_log_method,twopass,vmaf_model,extra_metrics):
         self.input=i
         self.qlist=q
         self.cmd=cmd
@@ -243,12 +255,13 @@ class single_tester:
         self.fail_log=[]
         self.twopass=twopass
         self.vmaf_model=vmaf_model
+        self.extra_metrics=extra_metrics
 
     def run(self):
         mark=True
         for q in self.qlist:
             utils.cls()
-            enc=encode(cmd=self.cmd.format(q=q,i="{i}",o="{o}",passopt="{passopt}"),i=self.input,o=f"{self.name}.q{q}",suffix=self.suffix,i_charset=self.charset,twopass=self.twopass,vmaf_model=self.vmaf_model)
+            enc=encode(cmd=self.cmd.format(q=q,i="{i}",o="{o}",passopt="{passopt}"),i=self.input,o=f"{self.name}.q{q}",suffix=self.suffix,i_charset=self.charset,twopass=self.twopass,vmaf_model=self.vmaf_model,extra_metrics=self.extra_metrics)
             run=enc.run()
             mark=mark and run
             if run:
@@ -260,7 +273,11 @@ class single_tester:
                 template["bitrate"]=bitrate
                 template["speed"]=fps
                 vmaf_tab=utils.vmaf_model_list[self.vmaf_model]
-                template["ssim"],template["ms_ssim"],template[vmaf_tab]=utils.calc_score(f"{self.name}.q{q}_fin.csv")
+                scores_calc=utils.calc_score(f"{self.name}.q{q}_fin.csv")
+                template[vmaf_tab]=scores_calc["vmaf"]
+                for i in self.extra_metrics:
+                    template[i]=scores_calc[i]
+                # template["ssim"],template["ms_ssim"],template[vmaf_tab]=utils.calc_score(f"{self.name}.q{q}_fin.csv")
                 self.data.append(template)
         return mark
 
@@ -415,7 +432,7 @@ class htmlreport:
             file.write(self.soup.prettify())
 
 class tester:
-    def __init__(self,src:str,encoder:str,base_args:str,test_arg:str,value=None,quality=[24,27,30,33,36],link:str=" ",workspace:str="",suffix="",process_log_method=None,i_charset="utf-8",twopass=False,vmaf_model=0,ref=0):
+    def __init__(self,src:str,encoder:str,base_args:str,test_arg:str,value=None,quality=[24,27,30,33,36],link:str=" ",workspace:str="",suffix="",process_log_method=None,i_charset="utf-8",twopass=False,vmaf_model=0,ref=0,extra_metrics=['ssim']):
         self.source=src
         self.charset=i_charset
         self.argsbooltype=not isinstance(value,list)
@@ -436,6 +453,7 @@ class tester:
         self.vmaf_model=vmaf_model
         self.ref=self.testlist[ref]
         self.skipbdrate=False
+        self.extra_metrics=extra_metrics
 
         if process_log_method is None:
             if encoder=="x264":
@@ -465,7 +483,7 @@ class tester:
         for test in self.testlist:
             utils.cls()
             cmd=self.cmd.format(test=test,q="{q}",i="{i}",o="{o}",passopt="{passopt}")
-            st=single_tester(i=self.source,name=''.join(i if i not in r'\/:*?"<>|' else '_' for i in test),suffix=self.suffix,q=self.quality,cmd=cmd,i_charset=self.charset,process_log_method=self.process_log,twopass=self.twopass,vmaf_model=self.vmaf_model)
+            st=single_tester(i=self.source,name=''.join(i if i not in r'\/:*?"<>|' else '_' for i in test),suffix=self.suffix,q=self.quality,cmd=cmd,i_charset=self.charset,process_log_method=self.process_log,twopass=self.twopass,vmaf_model=self.vmaf_model,extra_metrics=self.extra_metrics)
             run=st.run()
             if not run:
                 self.fail.append(test)
@@ -473,17 +491,24 @@ class tester:
                 continue
             self.result.append({"test":test,"data":st.getdata()})
             if self.ref==test:
-                self.refdata={"rate":[i['bitrate'] for i in st.getdata()],"score":[i[utils.vmaf_model_list[self.vmaf_model]] for i in st.getdata()]}
+                st_data=st.getdata()
+                self.refdata={"rate":[i['bitrate'] for i in st_data],"vmaf":[i[utils.vmaf_model_list[self.vmaf_model]] for i in st_data]}
+                for i in self.extra_metrics:
+                    self.refdata[i]=[j[i] for j in st_data]
         utils.cls()
         if not self.skipbdrate:
             self.bdrate()
 
     def bdrate(self):
-        ref_rate,ref_score=self.refdata["rate"],self.refdata["score"]
+        ref_rate,ref_vmaf=self.refdata["rate"],self.refdata["vmaf"]
         vmaf_tab=utils.vmaf_model_list[self.vmaf_model]
         for r in self.result:
-            test_rate,test_score=[i['bitrate'] for i in r["data"]],[i[vmaf_tab] for i in r["data"]]
-            r["bdrate"]=bd.bd_rate(ref_rate, ref_score, test_rate, test_score, method='akima')
+            test_rate,test_vmaf=[i['bitrate'] for i in r["data"]],[i[vmaf_tab] for i in r["data"]]
+            r["bdrate-vmaf"]=bd.bd_rate(ref_rate, ref_vmaf, test_rate, test_vmaf, method='akima')
+            for i in self.extra_metrics:
+                ref_exscore=self.refdata[i]
+                test_exscore=[j[i] for j in r["data"]]
+                r[f"bdrate-{i}"]=bd.bd_rate(ref_rate, ref_exscore, test_rate, test_exscore, method='akima')
 
     def report(self):
         for r in self.result:
@@ -495,22 +520,25 @@ class tester:
         report=htmlreport(html)
         for r in self.result:
             vmaf_tab=utils.vmaf_model_list[self.vmaf_model]
-            report.addtable(r["test"],r["data"],["q","bitrate","ssim",vmaf_tab,"speed"],
+            bdrates=f'vmaf: {r["bdrate-vmaf"]:.02f}%'
+            for i in self.extra_metrics:
+                bdrates+=f'<br />{i}: {r[f"bdrate-{i}"]:.02f}%'
+            report.addtable(r["test"],r["data"],["q","bitrate"]+self.extra_metrics+[vmaf_tab,"speed"],
                 process=lambda x,y: str(x[y])+"&ensp;fps" if y=="speed" else str(x[y])+"&ensp;kbps" if y=="bitrate" else str(x[y]),
-                extra=[f'{r["bdrate"]:.02f}%',self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}",passopt="<2-PASS_OPTS>" if self.twopass else '')],
+                extra=[bdrates,self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}",passopt="<2-PASS_OPTS>" if self.twopass else '')],
                 extratitle=["args"] if self.skipbdrate else ["bd-rate","args"],exclass=["extra2"] if self.skipbdrate else ["extra","extra2"])
         
         report.save("report.html")
 
 
 if __name__ == "__main__":
-    src=r"test.vpy"
-    encoder=r"x264"
-    base_args=r'--demuxer y4m --crf {q} --{test} {passopt} -o "{o}" -'
+    src=r"a.vpy"
+    encoder=r"x265"
+    base_args=r'--y4m --crf {q} --{test} {passopt} -o "{o}" -'
     test_arg="preset"
-    value=[1,2,3]
+    value=[5,6]
     
-    test=tester(src,encoder,base_args,test_arg,value,suffix=".h264",quality=[17,19,21,23,25],workspace='',link=' ',twopass=False,vmaf_model=0)
+    test=tester(src,encoder,base_args,test_arg,value,suffix=".hevc",quality=[14,18,22,26],workspace='',link=' ',twopass=False,vmaf_model=0,extra_metrics=['ssim'])
     test.run()
     test.report()
     input('\npress enter to exit')
