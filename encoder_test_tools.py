@@ -40,8 +40,8 @@ class utils:
         else:
             mean=lambda i: (sum(map(lambda x: x**2),i)/len(i))**0.5
         
-        scores={"psnr":[],"psnr-hvs":[],"ssim":[],"vmaf":[]}
-        score_names_dict={"psnr_y":"psnr","psnr_hvs":"psnr-hvs","float_ssim":"ssim"}
+        scores={"psnr-y":[],"psnr-hvs":[],"ssim":[],"vmaf":[]}
+        score_names_dict={"psnr_y":"psnr-y","psnr_hvs":"psnr-hvs","float_ssim":"ssim"}
         with open(path) as file:
             data=[i for i in csv.DictReader(file)]
             found_metrics=[]
@@ -69,7 +69,7 @@ class utils:
             os.system("clear")
 
     vmaf_model_list=['vmaf','vmaf_neg','vmaf_b_bagging','vmaf_4k']
-    feature_id={"psnr":0,"psnr-hvs":1,"ssim":2}
+    feature_id={"psnr-y":0,"psnr-hvs":1,"ssim":2}
 
 class process_log:
     def __init__(self,method=None):
@@ -492,18 +492,23 @@ class tester:
             self.result.append({"test":test,"data":st.getdata()})
             if self.ref==test:
                 st_data=st.getdata()
-                self.refdata={"rate":[i['bitrate'] for i in st_data],"vmaf":[i[utils.vmaf_model_list[self.vmaf_model]] for i in st_data],"ssim":[i['ssim'] for i in st_data]}
+                self.refdata={"rate":[i['bitrate'] for i in st_data],"vmaf":[i[utils.vmaf_model_list[self.vmaf_model]] for i in st_data]}
+                for i in self.extra_metrics:
+                    self.refdata[i]=[j[i] for j in st_data]
         utils.cls()
         if not self.skipbdrate:
             self.bdrate()
 
     def bdrate(self):
-        ref_rate,ref_vmaf,ref_ssim=self.refdata["rate"],self.refdata["vmaf"],self.refdata["ssim"]
+        ref_rate,ref_vmaf=self.refdata["rate"],self.refdata["vmaf"]
         vmaf_tab=utils.vmaf_model_list[self.vmaf_model]
         for r in self.result:
-            test_rate,test_vmaf,test_ssim=[i['bitrate'] for i in r["data"]],[i[vmaf_tab] for i in r["data"]],[i['ssim'] for i in r["data"]]
+            test_rate,test_vmaf=[i['bitrate'] for i in r["data"]],[i[vmaf_tab] for i in r["data"]]
             r["bdrate-vmaf"]=bd.bd_rate(ref_rate, ref_vmaf, test_rate, test_vmaf, method='akima')
-            r["bdrate-ssim"]=bd.bd_rate(ref_rate, ref_ssim, test_rate, test_ssim, method='akima')
+            for i in self.extra_metrics:
+                ref_exscore=self.refdata[i]
+                test_exscore=[j[i] for j in r["data"]]
+                r[f"bdrate-{i}"]=bd.bd_rate(ref_rate, ref_exscore, test_rate, test_exscore, method='akima')
 
     def report(self):
         for r in self.result:
@@ -515,9 +520,12 @@ class tester:
         report=htmlreport(html)
         for r in self.result:
             vmaf_tab=utils.vmaf_model_list[self.vmaf_model]
+            bdrates=f'vmaf: {r["bdrate-vmaf"]:.02f}%'
+            for i in self.extra_metrics:
+                bdrates+=f'<br />{i}: {r[f"bdrate-{i}"]:.02f}%'
             report.addtable(r["test"],r["data"],["q","bitrate"]+self.extra_metrics+[vmaf_tab,"speed"],
                 process=lambda x,y: str(x[y])+"&ensp;fps" if y=="speed" else str(x[y])+"&ensp;kbps" if y=="bitrate" else str(x[y]),
-                extra=[f'vmaf: {r["bdrate-vmaf"]:.02f}%\nssim: {r["bdrate-ssim"]:.02f}%',self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}",passopt="<2-PASS_OPTS>" if self.twopass else '')],
+                extra=[bdrates,self.encoder+" "+self.base_args.format(test=r["test"],q="{q}",o="{o}",passopt="<2-PASS_OPTS>" if self.twopass else '')],
                 extratitle=["args"] if self.skipbdrate else ["bd-rate","args"],exclass=["extra2"] if self.skipbdrate else ["extra","extra2"])
         
         report.save("report.html")
